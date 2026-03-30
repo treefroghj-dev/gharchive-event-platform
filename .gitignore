@@ -1,0 +1,84 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+wheels/
+*.egg-info/
+.eggs/
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Environment and secrets (keep .env.example committed)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+**/secrets/
+airflow/keys/
+
+# Local datasets and downloads (large / sensitive)
+# Raw GHArchive hour files under ingestion (often 100MB+; use GCS or download locally)
+src/gharchive_events/ingestion/*.json
+data/
+datas/
+raw/
+downloads/
+*.parquet
+*.csv.gz
+*.json.gz
+*.ndjson
+*.ndjson.gz
+
+# Logs and runtime output
+logs/
+*.log
+transform_debug.log
+
+# dbt
+**/target/
+**/dbt_packages/
+dbt.log
+
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store

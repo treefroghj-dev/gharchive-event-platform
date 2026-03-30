@@ -1,0 +1,11 @@
+version: 2
+
+sources:
+  - name: gharchive_events
+    database: "{{ env_var('GHARCHIVE_GCP_PROJECT_ID') }}"
+    schema: "{{ env_var('GHARCHIVE_BQ_DATASET') }}"
+    tables:
+      - name: watch_events
+        identifier: source_watch_events
+      - name: fork_events
+        identifier: source_fork_events

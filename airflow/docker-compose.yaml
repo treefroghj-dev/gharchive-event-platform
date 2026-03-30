@@ -1,0 +1,87 @@
+version: "3.8"
+
+x-airflow-common: &airflow-common
+  build:
+    context: ..
+    dockerfile: airflow/Dockerfile
+  image: gharchive-airflow:latest
+  env_file:
+    - .env
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "True"
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "True"
+    AIRFLOW__WEBSERVER__WORKERS: "1"
+
+    GCP_PROJECT_ID: ${GHARCHIVE_GCP_PROJECT_ID}
+    GCP_REGION: ${GHARCHIVE_GCP_REGION}
+    GCS_BUCKET_NAME: ${GHARCHIVE_GCS_BUCKET_NAME}
+    BQ_DATASET: ${GHARCHIVE_BQ_DATASET}
+    GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/keys/gcp-key.json
+
+    GHARCHIVE_GCP_PROJECT_ID: ${GHARCHIVE_GCP_PROJECT_ID}
+    GHARCHIVE_GCP_REGION: ${GHARCHIVE_GCP_REGION}
+    GHARCHIVE_GCS_BUCKET_NAME: ${GHARCHIVE_GCS_BUCKET_NAME}
+    GHARCHIVE_BQ_DATASET: ${GHARCHIVE_BQ_DATASET}
+    GHARCHIVE_GOOGLE_APPLICATION_CREDENTIALS_LOCAL: ${GHARCHIVE_GOOGLE_APPLICATION_CREDENTIALS_LOCAL}
+
+    PYTHONPATH: /opt/app/src:/opt/lib
+
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./plugins:/opt/airflow/plugins
+    - ../src:/opt/app/src
+    - ../logs:/opt/app/logs
+    - ../gharchive_dbt:/opt/app/gharchive_dbt
+    - ${GHARCHIVE_GOOGLE_APPLICATION_CREDENTIALS_LOCAL:-./keys/gcp-key.json}:/opt/airflow/keys/gcp-key.json:ro
+
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    - postgres
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+        POSTGRES_USER: airflow
+        POSTGRES_PASSWORD: airflow
+        POSTGRES_DB: airflow
+    volumes:
+        - postgres-db-volume:/var/lib/postgresql/data
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate && \
+        airflow users create \
+        --username admin \
+        --password admin \
+        --firstname admin \
+        --lastname admin \
+        --role Admin \
+        --email admin@example.com
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+      - airflow-init
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    depends_on:
+      - postgres
+      - airflow-init
+
+volumes:
+  postgres-db-volume:
+

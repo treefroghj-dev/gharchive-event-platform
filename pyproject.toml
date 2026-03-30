@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gharchive-events-platform"
+version = "0.1.0"
+description = "GH Archive events data pipeline with Airflow, Spark, BigQuery, and dbt"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "dbt-bigquery>=1.11.1",
+    "dbt-core>=1.11.7",
+    "pyspark>=4.1.1",
+    "requests>=2.32.5",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
