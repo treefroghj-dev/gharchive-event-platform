@@ -31,6 +31,12 @@ def current_utc_hour() -> datetime:
     return datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
 
 
+def default_available_utc_hour() -> datetime:
+    # GHArchive hourly files are usually not available immediately after the hour ends.
+    # To avoid requesting files that have not been published yet, use a 3-hour buffer.
+    return current_utc_hour() - timedelta(hours=3)
+
+
 def parse_utc_datetime_hour(value: str) -> datetime:
     if value.endswith("Z"):
         value = value.replace("Z", "+00:00")
@@ -49,7 +55,7 @@ def generate_hour_range(start_dt: datetime, end_dt: datetime) -> Iterable[dateti
 
 
 def parse_args() -> argparse.Namespace:
-    end_default = current_utc_hour()
+    end_default = default_available_utc_hour()
     start_default = end_default - timedelta(days=14)
 
     parser = argparse.ArgumentParser(

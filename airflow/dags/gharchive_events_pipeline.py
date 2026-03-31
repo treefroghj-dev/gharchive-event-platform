@@ -27,7 +27,7 @@ with DAG(
         task_id="ingest_gharchive_to_gcs",
         bash_command=(
             "cd /opt/app && "
-            "PYTHONPATH=. uv run python -m gharchive_events.ingestion.gharchive_to_gcs "
+            "PYTHONPATH=. python -m gharchive_events.ingestion.gharchive_to_gcs "
             "--skip-if-exists"
         ),
     )
@@ -35,10 +35,10 @@ with DAG(
     transform_task = BashOperator(
         task_id="transform_raw_to_bq_source",
         bash_command=(
-        "cd /opt/app/src && "
-        "PYTHONPATH=. uv run python -m gharchive_events.transform.gharchive_events_transform "
-        "--execution-date {{ ds }}"
-    ),
+            "cd /opt/app/src && "
+            "PYTHONPATH=. python -m gharchive_events.transform.gharchive_events_transform "
+            "--execution-date {{ ds }}"
+        ),
     )
 
     dbt_run_task = BashOperator(

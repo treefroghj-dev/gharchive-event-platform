@@ -1,5 +1,3 @@
-version: "3.8"
-
 x-airflow-common: &airflow-common
   build:
     context: ..
@@ -25,7 +23,8 @@ x-airflow-common: &airflow-common
     GHARCHIVE_GCP_REGION: ${GHARCHIVE_GCP_REGION}
     GHARCHIVE_GCS_BUCKET_NAME: ${GHARCHIVE_GCS_BUCKET_NAME}
     GHARCHIVE_BQ_DATASET: ${GHARCHIVE_BQ_DATASET}
-    GHARCHIVE_GOOGLE_APPLICATION_CREDENTIALS_LOCAL: ${GHARCHIVE_GOOGLE_APPLICATION_CREDENTIALS_LOCAL}
+    # profiles.yml keyfile path inside the container (host key is bind-mounted here)
+    GHARCHIVE_GOOGLE_APPLICATION_CREDENTIALS_LOCAL: /opt/airflow/keys/gcp-key.json
 
     PYTHONPATH: /opt/app/src:/opt/lib
 

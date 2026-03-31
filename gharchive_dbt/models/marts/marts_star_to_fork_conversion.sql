@@ -23,5 +23,5 @@ select
     coalesce(weekly_fork_count / nullif(weekly_watch_count, 0), 0) as conversion_rate
 from repos_weekly_metrics
 where weekly_watch_count >= 20
-order by conversion_rate desc, weekly_watch_count desc
+order by weekly_watch_count desc, weekly_fork_count desc, conversion_rate desc
 

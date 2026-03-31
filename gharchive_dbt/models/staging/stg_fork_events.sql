@@ -12,7 +12,7 @@ select
     org_login,
     action,
     is_public
-from {{ source('gharchive_events', 'watch_events') }}
+from {{ source('gharchive_events', 'fork_events') }}
 where event_id is not null
   and repo_id is not null
   and event_date is not null

@@ -36,8 +36,26 @@ env/
 !.env.example
 *.pem
 *.key
+*.p12
+*.pfx
 **/secrets/
 airflow/keys/
+
+# Airflow / Docker Compose (local overrides and env; never commit real secrets)
+airflow/.env
+docker-compose.override.yaml
+docker-compose.override.yml
+
+# Google Cloud / OAuth files often created beside the project by gcloud or downloads
+application_default_credentials.json
+client_secret*.json
+/gcp-key.json
+*-service-account*.json
+
+# SSH private keys (if ever placed in the repo by mistake)
+id_rsa
+id_ed25519
+id_ecdsa
 
 # Local datasets and downloads (large / sensitive)
 # Raw GHArchive hour files under ingestion (often 100MB+; use GCS or download locally)
@@ -56,6 +74,7 @@ downloads/
 logs/
 *.log
 transform_debug.log
+**/transform_debug.log
 
 # dbt
 **/target/
@@ -75,6 +94,14 @@ override.tf.json
 *_override.tf
 *_override.tf.json
 
+# Spark / Hive local metadata (if you run Spark against a local warehouse path)
+metastore_db/
+spark-warehouse/
+derby.log
+
+# Jupyter
+.ipynb_checkpoints/
+
 # IDE / OS
 .idea/
 .vscode/
@@ -82,3 +109,4 @@ override.tf.json
 *.swo
 *~
 .DS_Store
+Thumbs.db
