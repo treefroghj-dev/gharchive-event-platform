@@ -23,6 +23,10 @@ clean-targets:         # directories to be removed by `dbt clean`
   - "dbt_packages"
 
 
+# Set by Airflow: dbt run --vars '{"anchor_date": "YYYY-MM-DD"}' (same as DAG logical date).
+vars:
+  anchor_date: null
+
 # Configuring models
 # Full documentation: https://docs.getdbt.com/docs/configuring-models
 
@@ -33,7 +37,10 @@ models:
   gharchive_events:
     staging:
       +materialized: view
+      +tags: [layer_staging]
     fct:
       +materialized: table
+      +tags: [layer_fct]
     marts:
       +materialized: table
+      +tags: [layer_marts]

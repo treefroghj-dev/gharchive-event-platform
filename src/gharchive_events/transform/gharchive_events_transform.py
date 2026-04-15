@@ -1,144 +1,72 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, UTC
 import argparse
-from pathlib import Path
+import os
+from datetime import date, datetime, timedelta, timezone
+from typing import Iterable
 
-from pyspark import SparkConf
-from pyspark.sql import SparkSession
+from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
-from google.cloud import storage
 
-from gharchive_events.utils.config import (
-    GCP_PROJECT_ID,
-    GCS_BUCKET_NAME,
-    GCS_PREFIX,
-    BQ_DATASET,
-    GOOGLE_APPLICATION_CREDENTIALS,
-    LOCAL_TMP_DIR,
-)
+GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "gharchive-events-platform-raw-dev")
+GCS_RAW_PREFIX = os.getenv("GCS_RAW_PREFIX", "gharchive/raw")
+GCS_PROCESSED_PREFIX = os.getenv("GCS_PROCESSED_PREFIX", "gharchive/processed")
+HOUR_FILE_LAG_HOURS = int(os.getenv("GHARCHIVE_HOUR_FILE_LAG_HOURS", "3"))
+
+def current_available_utc_date() -> date:
+    dt = datetime.now(timezone.utc) - timedelta(hours=HOUR_FILE_LAG_HOURS)
+    return dt.date()
+
+
+def parse_iso_date(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"Invalid date '{value}'. Expected YYYY-MM-DD format.") from exc
+
+
+def generate_date_range(start_date: date, end_date: date) -> Iterable[date]:
+    current = start_date
+    while current <= end_date:
+        yield current
+        current += timedelta(days=1)
 
 
 def parse_args() -> argparse.Namespace:
+    end_default = current_available_utc_date()
+    start_default = end_default - timedelta(days=13)
+
     parser = argparse.ArgumentParser(
-        description="Read GH Archive raw data from GCS and build GH Archive source tables in BigQuery."
+        description="Transform GH Archive raw files from GCS and write processed parquet."
     )
-
+    parser.add_argument("--start-date", default=start_default.isoformat())
+    parser.add_argument("--end-date", default=end_default.isoformat())
     parser.add_argument(
-        "--execution-date",
-        type=str,
-        default=None,
-        help="Logical execution date in YYYY-MM-DD format. Defaults to current UTC date.",
+        "--skip-if-processed-exists",
+        action="store_true",
+        help="Skip if both processed watch and fork outputs already exist.",
     )
-
     return parser.parse_args()
 
 
-def get_execution_date(execution_date_str: str | None):
-    if execution_date_str:
-        return datetime.strptime(execution_date_str, "%Y-%m-%d").date()
-    return datetime.now(UTC).date()
+def build_spark(*, app_name: str) -> SparkSession:
+    return SparkSession.builder.appName(app_name).getOrCreate()
 
 
-def build_input_paths(execution_date) -> list[str]:
-    dates_to_read = [
-        execution_date - timedelta(days=i)
-        for i in range(1, 16)
-    ]
-
-    return [
-        f"gs://{GCS_BUCKET_NAME}/{GCS_PREFIX}/year={d.year}/month={d.month:02d}/day={d.day:02d}/"
-        for d in dates_to_read
-    ]
-
-
-def split_gs_uri(gs_uri: str) -> tuple[str, str]:
-    if not gs_uri.startswith("gs://"):
-        raise ValueError(f"Expected gs:// URI, got: {gs_uri}")
-    bucket_and_path = gs_uri[len("gs://"):]
-    bucket, _, object_path = bucket_and_path.partition("/")
-    if not bucket or not object_path:
-        raise ValueError(f"Invalid gs:// URI: {gs_uri}")
-    return bucket, object_path
-
-
-def download_inputs_to_local(input_paths: list[str], execution_date) -> list[str]:
-    client = storage.Client(project=GCP_PROJECT_ID)
-    local_root = Path(LOCAL_TMP_DIR) / "transform_inputs" / execution_date.strftime("%Y-%m-%d")
-    local_root.mkdir(parents=True, exist_ok=True)
-
-    downloaded: list[str] = []
-
-    for input_path in input_paths:
-        bucket_name, object_path = split_gs_uri(input_path)
-        bucket = client.bucket(bucket_name)
-
-        if input_path.endswith("/"):
-            for blob in client.list_blobs(bucket, prefix=object_path):
-                if blob.name.endswith("/") or not blob.name.endswith((".json", ".json.gz")):
-                    continue
-                target = local_root / Path(blob.name).name
-                blob.download_to_filename(str(target))
-                downloaded.append(str(target))
-        else:
-            blob = bucket.blob(object_path)
-            target = local_root / Path(object_path).name
-            blob.download_to_filename(str(target))
-            downloaded.append(str(target))
-
-    if not downloaded:
-        raise FileNotFoundError("No input files downloaded from GCS.")
-
-    return downloaded
-
-
-def build_spark(include_bq: bool = True) -> SparkSession:
-    # Single fat connector: avoids mixing gcs-connector + BQ jars (Guava / google-api-client clashes).
-    # Reads use local files (downloaded via google-cloud-storage); writes use Storage Write API (no gs:// staging).
-    packages = [
-        "com.google.cloud.spark:spark-bigquery-with-dependencies_2.12:0.43.1",
-    ]
-
-    conf = (
-        SparkConf()
-        .setMaster("local[1]")
-        .set("spark.driver.memory", "512m")
-        .set("spark.executor.memory", "512m")
-        .setAppName("gharchive_events_transform")
-        .set("spark.jars.packages", ",".join(packages))
+def raw_gcs_glob_for_date(target_date: str) -> str:
+    year, month, day = target_date.split("-")
+    return (
+        f"gs://{GCS_BUCKET_NAME}/{GCS_RAW_PREFIX.strip('/')}/"
+        f"year={year}/month={month}/day={day}/hour=*/*.json.gz"
     )
 
-    builder = (
-        SparkSession.builder \
-        .config(conf=conf) \
-        .config("spark.sql.session.timeZone", "UTC")
-    )
 
-    if GOOGLE_APPLICATION_CREDENTIALS:
-        builder = (
-            builder
-            .config("spark.hadoop.google.cloud.auth.service.account.enable", "true")
-            .config(
-                "spark.hadoop.google.cloud.auth.service.account.json.keyfile",
-                GOOGLE_APPLICATION_CREDENTIALS,
-            )
-        )
-
-    return builder.getOrCreate()
+def processed_gcs_path_for_date(target_date: str, event_type: str) -> str:
+    prefix = GCS_PROCESSED_PREFIX.strip("/")
+    return f"gs://{GCS_BUCKET_NAME}/{prefix}/{event_type}/event_date={target_date}/"
 
 
-def write_to_bq(df, *, table_name: str):
-    (
-        df.write.format("bigquery")
-        .option("table", f"{GCP_PROJECT_ID}.{BQ_DATASET}.{table_name}")
-        .option("writeMethod", "direct")
-        .option("writeAtLeastOnce", "true")
-        .mode("overwrite")
-        .save()
-    )
-    print(f"Spark successfully wrote data into BigQuery {GCP_PROJECT_ID}.{BQ_DATASET}.{table_name}")
-
-def transform_watch_events(df_raw):
+def build_watch_df(df_raw: DataFrame) -> DataFrame:
     return (
         df_raw.filter(F.col("type") == "WatchEvent")
         .withColumn("event_ts", F.to_timestamp("created_at"))
@@ -147,9 +75,9 @@ def transform_watch_events(df_raw):
         .select(
             F.col("id").alias("event_id"),
             F.col("type").alias("event_type"),
-            F.col("event_ts"),
-            F.col("event_date"),
-            F.col("event_hour"),
+            "event_ts",
+            "event_date",
+            "event_hour",
             F.col("repo.id").alias("repo_id"),
             F.col("repo.name").alias("repo_name"),
             F.col("actor.id").alias("actor_id"),
@@ -162,7 +90,7 @@ def transform_watch_events(df_raw):
     )
 
 
-def transform_fork_events(df_raw):
+def build_fork_df(df_raw: DataFrame) -> DataFrame:
     return (
         df_raw.filter(F.col("type") == "ForkEvent")
         .withColumn("event_ts", F.to_timestamp("created_at"))
@@ -171,9 +99,9 @@ def transform_fork_events(df_raw):
         .select(
             F.col("id").alias("event_id"),
             F.col("type").alias("event_type"),
-            F.col("event_ts"),
-            F.col("event_date"),
-            F.col("event_hour"),
+            "event_ts",
+            "event_date",
+            "event_hour",
             F.col("repo.id").alias("repo_id"),
             F.col("repo.name").alias("repo_name"),
             F.col("actor.id").alias("actor_id"),
@@ -188,36 +116,94 @@ def transform_fork_events(df_raw):
     )
 
 
-def spark_create_source_tbl():
-    args = parse_args()
-    execution_date = get_execution_date(args.execution_date)
-    input_paths = build_input_paths(execution_date)
+def gcs_path_exists(spark: SparkSession, gcs_path: str) -> bool:
+    jvm = spark._jvm
+    hadoop_conf = spark._jsc.hadoopConfiguration()
+    path = jvm.org.apache.hadoop.fs.Path(gcs_path)
+    fs = path.getFileSystem(hadoop_conf)
+    return fs.exists(path)
 
-    print(f"Execution date: {execution_date}")
-    print("Reading input paths:")
-    for path in input_paths:
-        print(path)
 
-    local_input_paths = download_inputs_to_local(input_paths, execution_date)
-    print(f"Downloaded {len(local_input_paths)} local input file(s)")
+def processed_outputs_exist_for_date(spark: SparkSession, target_date: str) -> bool:
+    watch_output = processed_gcs_path_for_date(target_date, "watch")
+    fork_output = processed_gcs_path_for_date(target_date, "fork")
+    return gcs_path_exists(spark, watch_output) and gcs_path_exists(spark, fork_output)
 
-    spark = build_spark()
+
+def transform_one_date(
+    spark: SparkSession,
+    target_date: str,
+    skip_if_processed_exists: bool = False,
+) -> None:
+    print(f"Starting transform for date: {target_date}")
+
+    if skip_if_processed_exists and processed_outputs_exist_for_date(spark, target_date):
+        print(f"Skipping {target_date}: processed outputs already exist.")
+        return
+
+    input_path = raw_gcs_glob_for_date(target_date)
+    watch_output_path = processed_gcs_path_for_date(target_date, "watch")
+    fork_output_path = processed_gcs_path_for_date(target_date, "fork")
+
+    print(f"Reading raw input from: {input_path}")
+    df_raw = spark.read.json(input_path)
+
+    df_relevant = df_raw.filter(F.col("type").isin("WatchEvent", "ForkEvent"))
+
+    df_watch = build_watch_df(df_relevant)
+    df_fork = build_fork_df(df_relevant)
+
+    print(f"Writing watch output to: {watch_output_path}")
+    (
+        df_watch.repartition("event_date")
+        .write.mode("overwrite")
+        .partitionBy("event_date")
+        .parquet(watch_output_path)
+    )
+
+    print(f"Writing fork output to: {fork_output_path}")
+    (
+        df_fork.repartition("event_date")
+        .write.mode("overwrite")
+        .partitionBy("event_date")
+        .parquet(fork_output_path)
+    )
+
+    print(f"Finished transform for date: {target_date}")
+
+
+def transform_raw_to_processed_gcs_range(
+    start_date: str,
+    end_date: str,
+    skip_if_processed_exists: bool = False,
+) -> None:
+    start_dt = parse_iso_date(start_date)
+    end_dt = parse_iso_date(end_date)
+
+    if end_dt < start_dt:
+        raise ValueError("--end-date must be greater than or equal to --start-date")
+
+    spark = build_spark(app_name="gharchive_events_transform")
 
     try:
-        df_raw = spark.read.json(local_input_paths)
-        df_watch = transform_watch_events(df_raw)
-        df_fork = transform_fork_events(df_raw)
-        write_to_bq(df_watch, table_name="source_watch_events")
-        write_to_bq(df_fork, table_name="source_fork_events")
+        for dt in generate_date_range(start_dt, end_dt):
+            transform_one_date(
+                spark=spark,
+                target_date=dt.isoformat(),
+                skip_if_processed_exists=skip_if_processed_exists,
+            )
     finally:
-        try:
-            spark.stop()
-        except Exception as exc:
-            print(f"Spark stop warning: {exc}")
+        spark.stop()
 
 
-def main():
-    spark_create_source_tbl()
+def main() -> None:
+    args = parse_args()
+    transform_raw_to_processed_gcs_range(
+        start_date=args.start_date,
+        end_date=args.end_date,
+        skip_if_processed_exists=args.skip_if_processed_exists,
+    )
+
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,182 @@
+version: 2
+
+models:
+  - name: stg_watch_events
+    description: >
+      GitHub WatchEvents from the BigQuery source table; event_date is date(event_ts). Null event_id / repo_id / event_ts removed.
+    columns:
+      - name: event_id
+        description: GH Archive event identifier.
+        data_tests:
+          - not_null
+          - unique:
+              config:
+                severity: warn
+      - name: event_type
+        description: GH event type (e.g. WatchEvent).
+      - name: event_ts
+        description: Event timestamp.
+      - name: event_date
+        description: UTC calendar date derived from event_ts.
+        data_tests:
+          - not_null
+      - name: event_hour
+        description: Event hour within the day.
+      - name: repo_id
+        description: GitHub repository id.
+        data_tests:
+          - not_null
+      - name: repo_name
+        description: Repository full name (owner/repo).
+      - name: actor_id
+        description: User id who performed the action.
+      - name: actor_login
+        description: User login who performed the action.
+      - name: org_id
+        description: Organization id, if applicable.
+      - name: org_login
+        description: Organization login, if applicable.
+      - name: action
+        description: Watch action (e.g. started / ignored).
+      - name: is_public
+        description: Whether the repository is public.
+
+  - name: stg_fork_events
+    description: >
+      GitHub ForkEvents from the BigQuery source table; event_date is date(event_ts). Null event_id / repo_id / event_ts removed.
+    columns:
+      - name: event_id
+        description: GH Archive event identifier.
+        data_tests:
+          - not_null
+          - unique
+      - name: event_type
+        description: GH event type (e.g. ForkEvent).
+      - name: event_ts
+        description: Event timestamp.
+      - name: event_date
+        description: UTC calendar date derived from event_ts.
+        data_tests:
+          - not_null
+      - name: event_hour
+        description: Event hour within the day.
+      - name: repo_id
+        description: GitHub repository id.
+        data_tests:
+          - not_null
+      - name: repo_name
+        description: Repository full name (owner/repo).
+      - name: actor_id
+        description: User id who performed the fork.
+      - name: actor_login
+        description: User login who performed the fork.
+      - name: org_id
+        description: Organization id, if applicable.
+      - name: org_login
+        description: Organization login, if applicable.
+      - name: action
+        description: Fork-related action when present.
+      - name: is_public
+        description: Whether the repository is public.
+
+  - name: fct_repo_daily_watch_fork_metrics
+    description: >
+      Daily watch and fork event counts per repository, built from staging aggregates.
+      Grain is one row per (event_date, repo_id, repo_name).
+    columns:
+      - name: event_date
+        description: Calendar date of aggregated events.
+        data_tests:
+          - not_null
+      - name: repo_id
+        description: GitHub repository id.
+        data_tests:
+          - not_null
+      - name: repo_name
+        description: Repository full name at time of aggregation.
+        data_tests:
+          - not_null
+      - name: watch_events_cnt
+        description: Count of watch events for this repo on this date.
+      - name: fork_events_cnt
+        description: Count of fork events for this repo on this date.
+
+  - name: marts_watch_top_repos_7d
+    description: >
+      Top 10 repositories by watch count in the 7-day window ending before anchor_date (excludes anchor day).
+    columns:
+      - name: repo_id
+        description: GitHub repository id.
+        data_tests:
+          - not_null
+      - name: repo_name
+        description: Repository full name.
+        data_tests:
+          - not_null
+      - name: weekly_watch_count
+        description: Sum of watch_events_cnt over the 7-day window.
+        data_tests:
+          - not_null
+
+  - name: marts_fork_top_repos_7d
+    description: >
+      Top 10 repositories by fork count in the 7-day window ending before anchor_date (excludes anchor day).
+    columns:
+      - name: repo_id
+        description: GitHub repository id.
+        data_tests:
+          - not_null
+      - name: repo_name
+        description: Repository full name.
+        data_tests:
+          - not_null
+      - name: weekly_fork_count
+        description: Sum of fork_events_cnt over the 7-day window.
+        data_tests:
+          - not_null
+
+  - name: marts_watch_rasing_repos_7d
+    description: >
+      Repositories with at least 20 watches in the current 7-day window (before anchor_date),
+      ranked by week-over-week watch delta vs the prior 7-day window.
+    columns:
+      - name: repo_id
+        description: GitHub repository id.
+        data_tests:
+          - not_null
+      - name: repo_name
+        description: Repository full name.
+        data_tests:
+          - not_null
+      - name: current_week_watch_count
+        description: Watch count in the 7 days before anchor_date.
+        data_tests:
+          - not_null
+      - name: prev_week_watch_count
+        description: Watch count in the 7 days before that window.
+        data_tests:
+          - not_null
+      - name: watch_count_delta
+        description: current_week_watch_count minus prev_week_watch_count.
+        data_tests:
+          - not_null
+      - name: watch_growth_ratio
+        description: >
+          (current_week_watch_count + 1) / (prev_week_watch_count + 1); smoothed growth ratio.
+
+  - name: marts_repo_intent_classification
+    description: >
+      Summary of repo intent labels (usage_driven, interest_driven, balanced) as shares of active repos
+      (weekly watch or fork >= 20) in the 7-day window before anchor_date. When there are no active repos,
+      rates may be null.
+    columns:
+      - name: intent_type
+        description: Intent bucket name for the summary row.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["usage_driven", "interest_driven", "balanced"]
+      - name: rate
+        description: >
+          Fraction of active repositories in that intent_type (0–1 when defined; null if denominator is zero).

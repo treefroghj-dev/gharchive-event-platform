@@ -1,3 +1,13 @@
+{{ config(
+    materialized='table',
+    partition_by={
+      "field": "event_date",
+      "data_type": "date"
+    },
+    cluster_by=["repo_id"]
+) }}
+
+
 with watch_event_agg as (
     select
         event_date,

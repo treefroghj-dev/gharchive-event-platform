@@ -20,8 +20,7 @@ from google.cloud import storage
 from gharchive_events.utils.config import (
     GCP_PROJECT_ID,
     GCS_BUCKET_NAME,
-    GCS_PREFIX
-
+    GCS_RAW_PREFIX,
 )
 
 BASE_URL = "https://data.gharchive.org"
@@ -91,7 +90,7 @@ def build_url(dt: datetime) -> str:
 def build_gcs_object_name(dt: datetime) -> str:
     filename = build_filename(dt)
     return (
-        f"{GCS_PREFIX}/"
+        f"{GCS_RAW_PREFIX}/"
         f"year={dt.year:04d}/"
         f"month={dt.month:02d}/"
         f"day={dt.day:02d}/"
