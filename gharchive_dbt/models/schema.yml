@@ -14,6 +14,11 @@ models:
                 severity: warn
       - name: event_type
         description: GH event type (e.g. WatchEvent).
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["WatchEvent"]
       - name: event_ts
         description: Event timestamp.
       - name: event_date
@@ -52,6 +57,11 @@ models:
           - unique
       - name: event_type
         description: GH event type (e.g. ForkEvent).
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["ForkEvent"]
       - name: event_ts
         description: Event timestamp.
       - name: event_date
