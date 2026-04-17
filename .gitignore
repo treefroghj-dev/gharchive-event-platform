@@ -1,4 +1,4 @@
-# Python
+# --- Python ---
 __pycache__/
 *.py[cod]
 *$py.class
@@ -24,13 +24,13 @@ coverage.xml
 *.cover
 .hypothesis/
 
-# Virtual environments
+# Virtual environments (large)
 .venv/
 venv/
 ENV/
 env/
 
-# Environment and secrets (keep .env.example committed)
+# --- Environment & secrets (keep *.example committed) ---
 .env
 .env.*
 !.env.example
@@ -41,15 +41,16 @@ env/
 **/secrets/
 airflow/keys/
 
-# Airflow / Docker Compose (local overrides and env; never commit real secrets)
+# Airflow / Docker Compose local overrides
 airflow/.env
 docker-compose.override.yaml
 docker-compose.override.yml
 
-# Google Cloud / OAuth files often created beside the project by gcloud or downloads
+# --- Google Cloud / OAuth (sensitive; often large JSON) ---
 application_default_credentials.json
 client_secret*.json
-/gcp-key.json
+credentials.json
+**/gcp-key.json
 *-service-account*.json
 
 # SSH private keys (if ever placed in the repo by mistake)
@@ -57,8 +58,8 @@ id_rsa
 id_ed25519
 id_ecdsa
 
-# Local datasets and downloads (large / sensitive)
-# Raw GHArchive hour files under ingestion (often 100MB+; use GCS or download locally)
+# --- Local datasets & downloads (large) ---
+# Raw GHArchive hour files under ingestion (often 100MB+)
 src/gharchive_events/ingestion/*.json
 data/
 datas/
@@ -70,39 +71,43 @@ downloads/
 *.ndjson
 *.ndjson.gz
 
-# Logs and runtime output
+# Logs & runtime output
 logs/
 *.log
 transform_debug.log
 **/transform_debug.log
 
-# dbt
+# --- dbt (artifacts; profiles.yml uses env_var only and is committed) ---
+gharchive_dbt/.user.yml
 **/target/
 **/dbt_packages/
 dbt.log
 
-# Terraform
+# --- Terraform (state is sensitive; .tfvars often has IDs) ---
 .terraform/
 .terraform.lock.hcl
 *.tfstate
 *.tfstate.*
 *.tfvars
-!*.tfvars.example
+!terraform/terraform.tfvars
 crash.log
 override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
 
-# Spark / Hive local metadata (if you run Spark against a local warehouse path)
+# --- Spark / Hive local metadata ---
 metastore_db/
 spark-warehouse/
 derby.log
 
-# Jupyter
+# --- Jupyter ---
 .ipynb_checkpoints/
 
-# IDE / OS
+# --- Optional local library path (not part of source tree) ---
+lib/
+
+# --- IDE / OS ---
 .idea/
 .vscode/
 *.swp

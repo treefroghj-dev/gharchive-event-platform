@@ -7,12 +7,12 @@ from airflow.providers.google.cloud.operators.dataproc import DataprocCreateBatc
 from google.cloud import storage
 
 from gharchive_events.utils.config import (
+    DATAPROC_SERVICE_ACCOUNT,
     GCP_PROJECT_ID,
     GCP_REGION,
     GCS_BUCKET_NAME,
-    GCS_RAW_PREFIX,
     GCS_PROCESSED_PREFIX,
-    DATAPROC_SERVICE_ACCOUNT,
+    GCS_RAW_PREFIX,
     PIPELINE_DATA_DATE_LAG_DAYS,
 )
 
@@ -22,7 +22,7 @@ def data_partition_date(ds: str) -> str:
     return (day - timedelta(days=PIPELINE_DATA_DATE_LAG_DAYS)).isoformat()
 
 
-def upload_transform_script_to_gcs():
+def upload_transform_script_to_gcs() -> None:
     local_path = "/opt/app/src/gharchive_events/transform/gharchive_events_transform.py"
     blob_name = "jobs/gharchive_events_transform.py"
 
@@ -87,8 +87,16 @@ with DAG(
                 "pyspark_batch": {
                     "main_python_file_uri": TRANSFORM_SCRIPT_GCS_URI,
                     "args": [
-                        "--start-date", target_date_tmpl,
-                        "--end-date", target_date_tmpl,
+                        "--start-date",
+                        target_date_tmpl,
+                        "--end-date",
+                        target_date_tmpl,
+                        "--gcs-bucket-name",
+                        GCS_BUCKET_NAME,
+                        "--gcs-raw-prefix",
+                        GCS_RAW_PREFIX,
+                        "--gcs-processed-prefix",
+                        GCS_PROCESSED_PREFIX,
                         "--skip-if-processed-exists",
                     ],
                 },
@@ -99,18 +107,6 @@ with DAG(
                 },
                 "runtime_config": {
                     "version": "2.2",
-                    "properties": {
-                        "spark.driverEnv.GCS_BUCKET_NAME": GCS_BUCKET_NAME,
-                        "spark.executorEnv.GCS_BUCKET_NAME": GCS_BUCKET_NAME,
-                        "spark.driverEnv.GCS_RAW_PREFIX": GCS_RAW_PREFIX,
-                        "spark.executorEnv.GCS_RAW_PREFIX": GCS_RAW_PREFIX,
-                        "spark.driverEnv.GCS_PROCESSED_PREFIX": GCS_PROCESSED_PREFIX,
-                        "spark.executorEnv.GCS_PROCESSED_PREFIX": GCS_PROCESSED_PREFIX,
-                        "spark.driverEnv.GCP_PROJECT_ID": GCP_PROJECT_ID,
-                        "spark.executorEnv.GCP_PROJECT_ID": GCP_PROJECT_ID,
-                        "spark.driverEnv.GCP_REGION": GCP_REGION,
-                        "spark.executorEnv.GCP_REGION": GCP_REGION,
-                    },
                 },
                 "labels": {
                     "pipeline": "gharchive",
@@ -122,7 +118,7 @@ with DAG(
 
         transform_tasks.append(transform_task)
 
-    load_watch_task = BashOperator(
+    load_watch_events = BashOperator(
         task_id="load_watch_to_bq",
         bash_command=(
             "cd /opt/app && "
@@ -134,7 +130,7 @@ with DAG(
         ),
     )
 
-    load_fork_task = BashOperator(
+    load_fork_events = BashOperator(
         task_id="load_fork_to_bq",
         bash_command=(
             "cd /opt/app && "
@@ -146,13 +142,66 @@ with DAG(
         ),
     )
 
-    dbt_run_task = BashOperator(
-        task_id="dbt_run",
+    _dbt_vars_cli = "--vars '{\"anchor_date\": \"{{ ds }}\"}'"
+
+    dbt_test_staging = BashOperator(
+        task_id="dbt_test_staging",
         bash_command=(
-            "set -u\n"
+            "set -eu\n"
+            "cd /opt/app/gharchive_dbt || exit 1\n"
+            "dbt test --profiles-dir /opt/app/gharchive_dbt "
+            + _dbt_vars_cli
+            + " --select source:gharchive_events\n"
+            "dbt run --profiles-dir /opt/app/gharchive_dbt "
+            + _dbt_vars_cli
+            + " --select tag:layer_staging\n"
+            "dbt test --profiles-dir /opt/app/gharchive_dbt "
+            + _dbt_vars_cli
+            + " --select tag:layer_staging\n"
+        ),
+    )
+
+    dbt_run_fct = BashOperator(
+        task_id="dbt_run_fct",
+        bash_command=(
+            "set -eu\n"
             "cd /opt/app/gharchive_dbt || exit 1\n"
             "dbt run --profiles-dir /opt/app/gharchive_dbt "
-            "--vars '{\"anchor_date\": \"{{ ds }}\"}'"
+            + _dbt_vars_cli
+            + " --select tag:layer_fct\n"
+        ),
+    )
+
+    dbt_test_fct = BashOperator(
+        task_id="dbt_test_fct",
+        bash_command=(
+            "set -eu\n"
+            "cd /opt/app/gharchive_dbt || exit 1\n"
+            "dbt test --profiles-dir /opt/app/gharchive_dbt "
+            + _dbt_vars_cli
+            + " --select tag:layer_fct\n"
+        ),
+    )
+
+    dbt_run_marts = BashOperator(
+        task_id="dbt_run_marts",
+        bash_command=(
+            "set -eu\n"
+            "cd /opt/app/gharchive_dbt || exit 1\n"
+            "dbt run --profiles-dir /opt/app/gharchive_dbt "
+            + _dbt_vars_cli
+            + " --select tag:layer_marts\n"
+        ),
+    )
+
+    dbt_test_marts = BashOperator(
+        task_id="dbt_test_marts",
+        bash_command=(
+            "set -eu\n"
+            "cd /opt/app/gharchive_dbt || exit 1\n"
+            "dbt test --profiles-dir /opt/app/gharchive_dbt "
+            + _dbt_vars_cli
+            + " --select tag:layer_marts\n"
         ),
     )
 
@@ -161,4 +210,13 @@ with DAG(
     for i in range(len(transform_tasks) - 1):
         transform_tasks[i] >> transform_tasks[i + 1]
 
-    transform_tasks[-1] >> load_watch_task >> load_fork_task >> dbt_run_task
+    transform_tasks[-1] >> load_watch_events >> load_fork_events
+
+    (
+        load_fork_events
+        >> dbt_test_staging
+        >> dbt_run_fct
+        >> dbt_test_fct
+        >> dbt_run_marts
+        >> dbt_test_marts
+    )

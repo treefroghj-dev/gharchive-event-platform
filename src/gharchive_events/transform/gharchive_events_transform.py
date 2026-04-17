@@ -1,20 +1,15 @@
 from __future__ import annotations
 
 import argparse
-import os
 from datetime import date, datetime, timedelta, timezone
 from typing import Iterable
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
-GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "gharchive-events-platform-raw-dev")
-GCS_RAW_PREFIX = os.getenv("GCS_RAW_PREFIX", "gharchive/raw")
-GCS_PROCESSED_PREFIX = os.getenv("GCS_PROCESSED_PREFIX", "gharchive/processed")
-HOUR_FILE_LAG_HOURS = int(os.getenv("GHARCHIVE_HOUR_FILE_LAG_HOURS", "3"))
 
-def current_available_utc_date() -> date:
-    dt = datetime.now(timezone.utc) - timedelta(hours=HOUR_FILE_LAG_HOURS)
+def current_available_utc_date(hour_file_lag_hours: int) -> date:
+    dt = datetime.now(timezone.utc) - timedelta(hours=hour_file_lag_hours)
     return dt.date()
 
 
@@ -33,37 +28,80 @@ def generate_date_range(start_date: date, end_date: date) -> Iterable[date]:
 
 
 def parse_args() -> argparse.Namespace:
-    end_default = current_available_utc_date()
-    start_default = end_default - timedelta(days=13)
-
     parser = argparse.ArgumentParser(
         description="Transform GH Archive raw files from GCS and write processed parquet."
     )
-    parser.add_argument("--start-date", default=start_default.isoformat())
-    parser.add_argument("--end-date", default=end_default.isoformat())
+
+    parser.add_argument("--start-date", required=False)
+    parser.add_argument("--end-date", required=False)
+
+    parser.add_argument(
+        "--gcs-bucket-name",
+        required=True,
+        help="Target GCS bucket containing raw and processed GH Archive data.",
+    )
+    parser.add_argument(
+        "--gcs-raw-prefix",
+        required=True,
+        help="Raw GH Archive object prefix, e.g. gharchive/raw.",
+    )
+    parser.add_argument(
+        "--gcs-processed-prefix",
+        required=True,
+        help="Processed output object prefix, e.g. gharchive/processed.",
+    )
+    parser.add_argument(
+        "--hour-file-lag-hours",
+        type=int,
+        default=3,
+        help="How many hours behind current UTC time to consider data available.",
+    )
     parser.add_argument(
         "--skip-if-processed-exists",
         action="store_true",
         help="Skip if both processed watch and fork outputs already exist.",
     )
-    return parser.parse_args()
+
+    args = parser.parse_args()
+
+    end_default = current_available_utc_date(args.hour_file_lag_hours)
+    start_default = end_default - timedelta(days=13)
+
+    if not args.end_date:
+        args.end_date = end_default.isoformat()
+
+    if not args.start_date:
+        args.start_date = start_default.isoformat()
+
+    return args
 
 
 def build_spark(*, app_name: str) -> SparkSession:
     return SparkSession.builder.appName(app_name).getOrCreate()
 
 
-def raw_gcs_glob_for_date(target_date: str) -> str:
+def raw_gcs_glob_for_date(
+    *,
+    gcs_bucket_name: str,
+    gcs_raw_prefix: str,
+    target_date: str,
+) -> str:
     year, month, day = target_date.split("-")
     return (
-        f"gs://{GCS_BUCKET_NAME}/{GCS_RAW_PREFIX.strip('/')}/"
+        f"gs://{gcs_bucket_name}/{gcs_raw_prefix.strip('/')}/"
         f"year={year}/month={month}/day={day}/hour=*/*.json.gz"
     )
 
 
-def processed_gcs_path_for_date(target_date: str, event_type: str) -> str:
-    prefix = GCS_PROCESSED_PREFIX.strip("/")
-    return f"gs://{GCS_BUCKET_NAME}/{prefix}/{event_type}/event_date={target_date}/"
+def processed_gcs_path_for_date(
+    *,
+    gcs_bucket_name: str,
+    gcs_processed_prefix: str,
+    target_date: str,
+    event_type: str,
+) -> str:
+    prefix = gcs_processed_prefix.strip("/")
+    return f"gs://{gcs_bucket_name}/{prefix}/{event_type}/event_date={target_date}/"
 
 
 def build_watch_df(df_raw: DataFrame) -> DataFrame:
@@ -124,26 +162,65 @@ def gcs_path_exists(spark: SparkSession, gcs_path: str) -> bool:
     return fs.exists(path)
 
 
-def processed_outputs_exist_for_date(spark: SparkSession, target_date: str) -> bool:
-    watch_output = processed_gcs_path_for_date(target_date, "watch")
-    fork_output = processed_gcs_path_for_date(target_date, "fork")
+def processed_outputs_exist_for_date(
+    spark: SparkSession,
+    *,
+    gcs_bucket_name: str,
+    gcs_processed_prefix: str,
+    target_date: str,
+) -> bool:
+    watch_output = processed_gcs_path_for_date(
+        gcs_bucket_name=gcs_bucket_name,
+        gcs_processed_prefix=gcs_processed_prefix,
+        target_date=target_date,
+        event_type="watch",
+    )
+    fork_output = processed_gcs_path_for_date(
+        gcs_bucket_name=gcs_bucket_name,
+        gcs_processed_prefix=gcs_processed_prefix,
+        target_date=target_date,
+        event_type="fork",
+    )
     return gcs_path_exists(spark, watch_output) and gcs_path_exists(spark, fork_output)
 
 
 def transform_one_date(
     spark: SparkSession,
+    *,
+    gcs_bucket_name: str,
+    gcs_raw_prefix: str,
+    gcs_processed_prefix: str,
     target_date: str,
     skip_if_processed_exists: bool = False,
 ) -> None:
     print(f"Starting transform for date: {target_date}")
 
-    if skip_if_processed_exists and processed_outputs_exist_for_date(spark, target_date):
+    if skip_if_processed_exists and processed_outputs_exist_for_date(
+        spark,
+        gcs_bucket_name=gcs_bucket_name,
+        gcs_processed_prefix=gcs_processed_prefix,
+        target_date=target_date,
+    ):
         print(f"Skipping {target_date}: processed outputs already exist.")
         return
 
-    input_path = raw_gcs_glob_for_date(target_date)
-    watch_output_path = processed_gcs_path_for_date(target_date, "watch")
-    fork_output_path = processed_gcs_path_for_date(target_date, "fork")
+    input_path = raw_gcs_glob_for_date(
+        gcs_bucket_name=gcs_bucket_name,
+        gcs_raw_prefix=gcs_raw_prefix,
+        target_date=target_date,
+    )
+    watch_output_path = processed_gcs_path_for_date(
+        gcs_bucket_name=gcs_bucket_name,
+        gcs_processed_prefix=gcs_processed_prefix,
+        target_date=target_date,
+        event_type="watch",
+    )
+    fork_output_path = processed_gcs_path_for_date(
+        gcs_bucket_name=gcs_bucket_name,
+        gcs_processed_prefix=gcs_processed_prefix,
+        target_date=target_date,
+        event_type="fork",
+    )
 
     print(f"Reading raw input from: {input_path}")
     df_raw = spark.read.json(input_path)
@@ -173,8 +250,12 @@ def transform_one_date(
 
 
 def transform_raw_to_processed_gcs_range(
+    *,
     start_date: str,
     end_date: str,
+    gcs_bucket_name: str,
+    gcs_raw_prefix: str,
+    gcs_processed_prefix: str,
     skip_if_processed_exists: bool = False,
 ) -> None:
     start_dt = parse_iso_date(start_date)
@@ -189,6 +270,9 @@ def transform_raw_to_processed_gcs_range(
         for dt in generate_date_range(start_dt, end_dt):
             transform_one_date(
                 spark=spark,
+                gcs_bucket_name=gcs_bucket_name,
+                gcs_raw_prefix=gcs_raw_prefix,
+                gcs_processed_prefix=gcs_processed_prefix,
                 target_date=dt.isoformat(),
                 skip_if_processed_exists=skip_if_processed_exists,
             )
@@ -198,9 +282,13 @@ def transform_raw_to_processed_gcs_range(
 
 def main() -> None:
     args = parse_args()
+
     transform_raw_to_processed_gcs_range(
         start_date=args.start_date,
         end_date=args.end_date,
+        gcs_bucket_name=args.gcs_bucket_name,
+        gcs_raw_prefix=args.gcs_raw_prefix,
+        gcs_processed_prefix=args.gcs_processed_prefix,
         skip_if_processed_exists=args.skip_if_processed_exists,
     )
 

@@ -15,7 +15,6 @@ In this dataset, **watch** events reflect users starring or watching a repositor
 7. [Data warehouse](#data-warehouse)
 8. [Data visualization](#data-visualization)
 
-<!-- Explicit anchors so TOC links match on GitHub, VS Code, and other Markdown viewers. -->
 <a id="project-overview"></a>
 ## Project overview
 
@@ -28,7 +27,7 @@ Work flow:
 - **Extract** — Download hourly GH Archive JSON from the public feed and store it in **Google Cloud Storage**.
 - **Transform** — Run a **PySpark** job on **Dataproc** to read that JSON from **GCS**, keep **watch** and **fork** events, and write **Parquet** back to **GCS** (processed layout).
 - **Load** — Load curated **Parquet** from **GCS** into **BigQuery** **`source_watch_events`** and **`source_fork_events`**.
-- **Model** — Run **dbt** in BigQuery to build staging models, a daily fact table, and reporting marts.
+- **Model** — Run **dbt** in BigQuery **layer by layer**, with **tests after each layer** so bad data does not reach downstream models. The DAG runs: **source** tests on loaded tables → **staging** `dbt run` + **staging** tests → **fact** `dbt run` + **fact** tests → **marts** `dbt run` + **marts** tests. If a test fails, the Airflow task fails and later layers (fact, marts) are skipped for that run.
 
 **Airflow** orchestrates these steps; **Docker Compose** runs Airflow locally for development; **Terraform** provisions core GCP resources (see `terraform/`).
 
@@ -54,14 +53,13 @@ The ingestion job pulls hourly files for a **configurable UTC range** (defaults 
 ## Tech stack
 
 - **PySpark** — Expresses the batch transform: read GH Archive JSON from GCS in parallel, keep watch/fork events, write Parquet back to GCS, and load BigQuery source tables (the job runs on Dataproc).
-- **Apache Airflow** — Orchestrates the workflow: ingest files to GCS, trigger the transform, then run dbt against BigQuery.
-- **Docker / Docker Compose** — Runs Airflow locally (scheduler, web UI, workers) so you can develop and run the DAG without installing Airflow on the host.
+- **Apache Airflow** — Orchestrates the workflow: ingest files to GCS, trigger the transform, then run dbt models and tests against BigQuery.
+- **Docker / Docker Compose** — Runs Airflow locally with the **scheduler** and **triggerer** only (no web UI; **§5** explains why); use the **CLI** to trigger DAGs and inspect runs.
 - **Google Cloud Storage** — Holds raw hourly GH Archive JSON and the Parquet output the Spark job writes before loading into BigQuery.
 - **Google Cloud Dataproc** — Managed Spark service where the **PySpark** batch job runs.
-- **BigQuery** — Columnar warehouse for `source_watch_events` / `source_fork_events` and for all **dbt** models built on top of them.
+- **BigQuery** — Data warehouse for `source_watch_events` / `source_fork_events` and for all **dbt** models built on top of them.
 - **dbt** — Analytic engineering tool turns raw source tables into staging, facts, and mart tables.
 - **Terraform** — Provisions GCP pieces (for example bucket, BigQuery dataset) so infrastructure matches what the pipeline expects.
-
 
 <a id="set-up"></a>
 ## Set up
@@ -73,13 +71,13 @@ This walkthrough assumes you run Airflow with Docker Compose from the `airflow/`
 - **Docker** and **Docker Compose** (`docker compose`).
 - **GCP**: New [project](https://console.cloud.google.com/), **billing** on, **project ID** + **region** (e.g. `us-central1`) for Terraform and **`.env`**. Enable **Cloud Storage**, **BigQuery**, **Dataproc**, and **Cloud Logging** APIs.
 - **Terraform** `>= 1.5` (see **`terraform/`**) for infra after clone.
-- **Service account** JSON for Airflow/Spark/dbt (`GHARCHIVE_GOOGLE_APPLICATION_CREDENTIALS_LOCAL`): **BigQuery Data Editor**, **BigQuery Job User**, **Dataproc Editor**, **Service Account User**, **Service Usage Admin**, **Storage Object Admin** (adjust to least privilege). **`terraform apply`** needs a user or SA that can manage project resources (e.g. **Editor** or equivalent).
+- **Service account** JSON for Airflow/Spark/dbt (`GHARCHIVE_GOOGLE_APPLICATION_CREDENTIALS_LOCAL`): **BigQuery Data Editor**, **BigQuery Job User**, **Dataproc Editor**, **Service Account User**, **Service Usage Admin**, **Storage Object Admin**. **`terraform apply`** needs a user or SA that can manage project resources.
 
 ### 1. Clone the repository
 
 ### 2. Provision GCP resources with Terraform
 
-Copy **`terraform/terraform.tfvars.example`** to **`terraform/terraform.tfvars`** and set at least **`project_id`** and **`region`** to the **GCP project** and **region** from the prerequisites. Optionally set **`bucket_name`**, and **`dataset_id`** in that file; if you omit them, **`terraform/var.tf`** defaults apply—either way, use the **same** names in **`.env`** in the next step (`GHARCHIVE_GCS_BUCKET_NAME`, `GHARCHIVE_BQ_DATASET`, `GHARCHIVE_GCP_PROJECT_ID`, `GHARCHIVE_GCP_REGION`).
+Edit **`terraform/terraform.tfvars`**: set **`project_id`** and **`region`** to your GCP project and region. Optionally set **`bucket_name`** and **`dataset_id`**; otherwise **`terraform/var.tf`** defaults apply. Use the **same** project, region, bucket, and dataset names in **`.env`** (next step).
 
 Authenticate Terraform to your Google account (for example **`gcloud auth application-default login`**) or use credentials appropriate for your environment, then:
 
@@ -93,20 +91,22 @@ This creates the raw **GCS** bucket, and the **BigQuery** dataset.
 
 ### 3. Configure environment variables for Airflow
 
-**First** edit **`.env.example`** at the **repository root** (before copying). You should set at least these to match **your** GCP setup; everything else can stay as in the file unless you need different buckets, prefixes, or dataset names.
+**First** edit **`.env.example`** at the **repository root** (before copying). Set **`GHARCHIVE_GCP_PROJECT_ID`** and **`GHARCHIVE_GOOGLE_APPLICATION_CREDENTIALS_LOCAL`** to match **your** project and key file. **`GHARCHIVE_GCS_BUCKET_NAME`**, **`GHARCHIVE_GCS_RAW_PREFIX`**, **`GHARCHIVE_GCS_PROCESSED_PREFIX`**, and **`GHARCHIVE_BQ_DATASET`** can stay at the **defaults shown in `.env.example`** if those names match what **Terraform** created (or your existing bucket and dataset); change them only when you use different resource names.
 
 | Variable | Purpose |
-|----------|---------|
-| `GHARCHIVE_GCP_PROJECT_ID` | GCP **project id** (same as Terraform / console) |
-| `GHARCHIVE_GCP_REGION` | Region (e.g. `us-central1`); used by **dbt** BigQuery `location` and should match Terraform |
-| `GHARCHIVE_GCS_BUCKET_NAME`, `GHARCHIVE_GCS_*_PREFIX`, `GHARCHIVE_BQ_DATASET` | Bucket, raw/processed paths, and dataset (see **`.env.example`**) |
-| `GHARCHIVE_GOOGLE_APPLICATION_CREDENTIALS_LOCAL` | **Absolute path** on your host to the **JSON key** for that workload |
+| --- | --- |
+| `GHARCHIVE_GCP_PROJECT_ID` | GCP project ID; must match Terraform |
+| `GHARCHIVE_GCP_REGION` | GCP region for dbt and Dataproc (see default in **`.env.example`**) |
+| `GHARCHIVE_GOOGLE_APPLICATION_CREDENTIALS_LOCAL` | Absolute path on your host to the service account JSON key (mounted for Airflow and dbt) |
+| `GHARCHIVE_DATAPROC_SERVICE_ACCOUNT` | Service account email for Dataproc Serverless batches (transform tasks), e.g. `my-sa@PROJECT_ID.iam.gserviceaccount.com` |
 
 Then copy the file Compose actually reads:
 
 ```bash
 cp .env.example airflow/.env
 ```
+
+Only **`airflow/.env`** is loaded (**`airflow/docker-compose.yml`** `env_file`). A **`.env`** at the **repository root** is unused by this project and can be deleted if you do not rely on it for other tools. Real secrets stay in **`airflow/.env`** (gitignored); the only committed template is **`.env.example`**.
 
 ### 4. Build the Airflow image
 
@@ -123,7 +123,7 @@ cd airflow
 docker compose up
 ```
 
-Wait until `airflow-init` has finished and the webserver and scheduler are running. The UI is at [http://localhost:8080](http://localhost:8080) with the default admin user created by init (`admin` / `admin` unless you changed the init command in `docker-compose.yml`).
+Wait until `airflow-init` has finished and **`airflow-scheduler`** and **`airflow-triggerer`** are running.
 
 ### 6. Verify the DAG is loaded
 
@@ -134,7 +134,7 @@ cd airflow
 docker compose exec airflow-scheduler airflow dags list | grep gharchive_events_pipeline
 ```
 
-You should see `gharchive_events_pipeline`. New DAGs start **paused**; unpause it in the UI or run:
+You should see `gharchive_events_pipeline`. New DAGs start **paused**; unpause with:
 
 ```bash
 docker compose exec airflow-scheduler airflow dags unpause gharchive_events_pipeline
@@ -142,22 +142,42 @@ docker compose exec airflow-scheduler airflow dags unpause gharchive_events_pipe
 
 ### 7. Run the pipeline
 
-The DAG has **no schedule** (`schedule=None`), so you start it with **Trigger DAG**.
+The DAG has **no schedule** (`schedule=None`), so start a run with **`airflow dags trigger`** from the CLI below.
 
-**Logical date** (**`ds`**) is the pipeline **anchor**: Spark / **`bq load`** partitions and **dbt** **`anchor_date`** all use it, so marts stay in sync. Trigger with the default (run “now”) or set **Logical date** / **`--exec-date YYYY-MM-DD`** for a specific day.
+**Logical date** (**`ds`**) is the pipeline **anchor**: the Spark transform, **`bq load`** into BigQuery, and **dbt** **`anchor_date`** all use the same **`ds`**, so marts stay aligned. Trigger with the default logical date or add **`--exec-date YYYY-MM-DD`** for a specific day.
 
 ```bash
 docker compose exec airflow-scheduler airflow dags trigger gharchive_events_pipeline
-# optional: ... trigger ... --exec-date 2026-03-15
+# optional: append --exec-date 2026-03-15
 ```
 
 **Transform task shows `deferred`:** **`transform_raw_to_processed_gcs`** often stays **deferred** while the **PySpark** job runs on **Google Cloud Dataproc** (the Airflow task is waiting on the batch, not executing Spark locally). In **Google Cloud Console → Dataproc → Batches**, open the active batch and use its **Logs** (and batch detail) to follow driver/executor output. The task moves to **success** when Dataproc finishes the batch successfully.
 
-### 8. Check the results
+### 8. Check DAG run status (task states)
 
-**Airflow**
+After you trigger the DAG in **§7**, use the **DAG run id** to inspect task states. With **Docker Compose** still running, open **another terminal**, **`cd`** into **`airflow/`**, then:
 
-In the UI, open the DAG run (graph or grid) and confirm every task is **success**. For Airflow-captured output, open a task → **Log** (e.g. **dbt**; transform Spark detail is usually under **Dataproc → Batches**).
+1. Copy the **DAG run id** (`run_id`). It may appear in the **§7** trigger output; if not, list recent runs and take the latest **`run_id`** (for example `manual__2026-04-16T23:57:29+00:00`):
+
+   ```bash
+   docker compose exec airflow-scheduler airflow dags list-runs -d gharchive_events_pipeline
+   ```
+
+2. Run **`airflow tasks states-for-dag-run`** with the DAG id and your **`run_id`**. **Quote** the **`run_id`** so characters such as **`+`** are not interpreted by the shell:
+
+   ```bash
+   docker compose exec airflow-scheduler airflow tasks states-for-dag-run gharchive_events_pipeline '<DAG_RUN_ID>'
+   ```
+
+   Example when **`run_id`** is **`manual__2026-04-16T23:57:29+00:00`**:
+
+   ```bash
+   docker compose exec airflow-scheduler airflow tasks states-for-dag-run gharchive_events_pipeline 'manual__2026-04-16T23:57:29+00:00'
+   ```
+
+You get a table of **task id** and **state** (`success`, `running`, `deferred`, `failed`, …) for that run.
+
+### 9. Check the results
 
 **Google Cloud Storage**
 
@@ -181,14 +201,16 @@ In the UI, open the DAG run (graph or grid) and confirm every task is **success*
 <a id="data-pipeline-orchestration-airflow"></a>
 ## Data pipeline orchestration (Airflow)
 
-The batch workflow is driven by the **`gharchive_events_pipeline`** DAG in Apache **Airflow**: **ingest** hourly files to **GCS**, submit a **Dataproc** batch for **PySpark** (read JSON from **GCS**, write **Parquet** back to **GCS**, **load** **`source_watch_events`** and **`source_fork_events`** into **BigQuery**), then run **dbt**.
+The **`gharchive_events_pipeline`** DAG in Apache **Airflow** runs the batch workflow: **ingest** hourly files to **GCS**, **upload** the transform script, **submit** a **Dataproc** batch for **PySpark** that reads JSON from **GCS** and writes **Parquet** back to **GCS**, **load** **`source_watch_events`** and **`source_fork_events`** into **BigQuery**, then **run** layered **dbt** models and tests.
 
-![Airflow DAG overview](./images/airflow.png)
+Example output from **`airflow tasks states-for-dag-run`** (see **§8**): each row shows **`task_id`** and **`state`** (`success`, `deferred`, `failed`, or **`None`** until upstream tasks finish).
+
+![`airflow tasks states-for-dag-run` output for `gharchive_events_pipeline`](./images/log.png)
+
+**Why no webserver?** Compose runs only the **scheduler** and **triggerer**, not **`airflow-webserver`**, to keep **RAM and CPU** usage low for local development—the web UI adds another process that often **causes OOM** on smaller machines. Use the **CLI** (`airflow dags trigger`, `airflow tasks logs`, …). To use the web UI, add an **`airflow-webserver`** service to your Compose file (see the [Airflow Docker Compose guide](https://airflow.apache.org/docs/apache-airflow/stable/howto/docker-compose/index.html)) and **raise Docker’s memory limit** (for example in Docker Desktop **Settings → Resources**) if you **prefer the browser** for triggering or monitoring DAGs.
 
 <a id="data-transformation"></a>
 ## Data transformation
-
-**What runs on Dataproc**
 
 The DAG submits **PySpark** as a **Google Cloud Dataproc** batch (**`DataprocCreateBatchOperator`**). That job:
 
@@ -208,13 +230,12 @@ Airflow is for **orchestration** (scheduling and dependencies), not for hosting 
 
 ### dbt data tests
 
-The DAG runs **`dbt run`** only (with **`anchor_date`** = **`{{ ds }}`**). Generic tests in **`gharchive_dbt/models/`** YAML still apply when you run **`dbt test`** yourself (for example locally with the same **`--vars`**).
-
+The DAG passes **`anchor_date`** = **`{{ ds }}`** to every **`dbt`** command. It **tests sources**, then **runs and tests staging** (`tag:layer_staging`), then **runs and tests the fact** layer (`tag:layer_fct`), then **runs and tests marts** (`tag:layer_marts`). Tests defined in **`gharchive_dbt/models/`** YAML (uniqueness, not-null, accepted values, custom macros, and similar) must pass before the next layer runs; you can mirror the same **`dbt test`** / **`dbt run`** selections locally with the same **`--vars`**.
 
 <a id="data-visualization"></a>
 ## Data visualization
 
-Looker Studio charts below read from **dbt** marts in BigQuery.
+The **Looker Studio** charts below read from **dbt** marts in **BigQuery**; the data will differ from run to run depending on the **logical date** you use when you trigger the DAG.
 
 ### Repo intent classification summary
 
@@ -224,7 +245,7 @@ Share of **active** repos in three buckets from **forks ÷ watches**; windows us
 - **interest_driven** — ratio ≤ **0.5** (more watch-heavy → **interest** over forks).
 - **balanced** — between those cutoffs.
 
-![Repo intent classification summary](./images/repo_intent_classification.png)
+![Repos intent classification summary](./images/repos_intent_classification.png)
 
 ### Top watch repos (7d)
 
@@ -242,5 +263,4 @@ Same window (**last seven days**), but for **fork** events—repos users copied 
 
 Repos where **watch** activity is **growing** compared with the **previous** week, not only the biggest totals. It surfaces momentum: projects that had solid interest this week and **gained more watches than the week before**, ordered by that increase.
 
-![Rising watch repos](./images/rasing_repo.png)
-
+![Rising watch repos](./images/rising_repo.png)
