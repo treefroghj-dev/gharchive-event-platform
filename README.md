@@ -203,7 +203,7 @@ You get a table of **task id** and **state** (`success`, `running`, `deferred`, 
 <a id="data-pipeline-orchestration-airflow"></a>
 ## Data pipeline orchestration (Airflow)
 
-The **`gharchive_events_pipeline`** DAG in Apache **Airflow** runs the batch workflow: **ingest** hourly files to **GCS**, **upload** the transform script, **submit** a **Dataproc** batch for **PySpark** that reads JSON from **GCS** and writes **Parquet** back to **GCS**, **load** **`source_watch_events`** and **`source_fork_events`** into **BigQuery**, then **run** layered **dbt** models and tests.
+The **`gharchive_events_pipeline`** DAG in Apache **Airflow** runs the batch workflow: **ingest** hourly files to **GCS**, **upload** the transform script, **submit** a **Dataproc** batch for **PySpark** that reads JSON from **GCS** and writes **Parquet** back to **GCS**, then **load** processed **Parquet** from **GCS** into **`source_watch_events`** and **`source_fork_events`** in **BigQuery** then **run** layered **dbt** models and tests.
 
 Example output from **`airflow tasks states-for-dag-run`** (see **§8**): each row shows **`task_id`** and **`state`** (`success`, `deferred`, `failed`, or **`None`** until upstream tasks finish).
 
@@ -218,8 +218,9 @@ The DAG submits **PySpark** as a **Google Cloud Dataproc** batch (**`DataprocCre
 
 - reads GH Archive **JSON** from **GCS** (Hive-style paths by UTC date/hour)
 - keeps **Watch** and **Fork** events
-- writes **Parquet** back to **GCS**
-- loads **`source_watch_events`** and **`source_fork_events`** in **BigQuery**
+- writes **Parquet** back to **GCS** under the processed prefix
+
+**BigQuery** **`source_watch_events`** and **`source_fork_events`** are loaded in **separate Airflow tasks** (`load_watch_to_bq`, `load_fork_to_bq`) that run **`load_processed_to_bq.py`** in the Airflow container—**after** the Dataproc batches finish—reading those **Parquet** paths and loading into BigQuery.
 
 **Why Dataproc instead of Spark inside Airflow**
 
