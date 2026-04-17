@@ -9,24 +9,24 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__CORE__LOAD_EXAMPLES: "False"
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "True"
+    AIRFLOW__CORE__PARALLELISM: "2"
+    AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "1"
+    AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: "1"
+    AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT: 'google-cloud-platform://?extra__google_cloud_platform__project=${GHARCHIVE_GCP_PROJECT_ID}&extra__google_cloud_platform__key_path=/opt/airflow/keys/gcp-key.json'
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
-    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "True"
-    AIRFLOW__WEBSERVER__WORKERS: "1"
 
-    GCP_PROJECT_ID: ${GHARCHIVE_GCP_PROJECT_ID}
-    GCP_REGION: ${GHARCHIVE_GCP_REGION}
-    GCS_BUCKET_NAME: ${GHARCHIVE_GCS_BUCKET_NAME}
-    BQ_DATASET: ${GHARCHIVE_BQ_DATASET}
     GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/keys/gcp-key.json
 
     GHARCHIVE_GCP_PROJECT_ID: ${GHARCHIVE_GCP_PROJECT_ID}
     GHARCHIVE_GCP_REGION: ${GHARCHIVE_GCP_REGION}
     GHARCHIVE_GCS_BUCKET_NAME: ${GHARCHIVE_GCS_BUCKET_NAME}
+    GHARCHIVE_GCS_RAW_PREFIX: ${GHARCHIVE_GCS_RAW_PREFIX:-gharchive/raw}
+    GHARCHIVE_GCS_PROCESSED_PREFIX: ${GHARCHIVE_GCS_PROCESSED_PREFIX:-gharchive/processed}
     GHARCHIVE_BQ_DATASET: ${GHARCHIVE_BQ_DATASET}
     # profiles.yml keyfile path inside the container (host key is bind-mounted here)
     GHARCHIVE_GOOGLE_APPLICATION_CREDENTIALS_LOCAL: /opt/airflow/keys/gcp-key.json
 
-    PYTHONPATH: /opt/app/src:/opt/lib
+    PYTHONPATH: /opt/app/src
 
   volumes:
     - ./dags:/opt/airflow/dags
@@ -56,27 +56,18 @@ services:
     command:
       - -c
       - |
-        airflow db migrate && \
-        airflow users create \
-        --username admin \
-        --password admin \
-        --firstname admin \
-        --lastname admin \
-        --role Admin \
-        --email admin@example.com
-
-  airflow-webserver:
-    <<: *airflow-common
-    command: webserver
-    ports:
-      - "8080:8080"
-    depends_on:
-      - postgres
-      - airflow-init
+        airflow db migrate
 
   airflow-scheduler:
     <<: *airflow-common
     command: scheduler
+    depends_on:
+      - postgres
+      - airflow-init
+  
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
     depends_on:
       - postgres
       - airflow-init

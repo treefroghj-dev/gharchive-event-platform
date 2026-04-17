@@ -31,23 +31,6 @@ resource "google_storage_bucket" "gharchive_raw" {
   }
 }
 
-resource "google_storage_bucket" "bq_temp" {
-  name                        = var.bq_temp_bucket_name
-  location                    = var.region
-  storage_class               = "STANDARD"
-  uniform_bucket_level_access = true
-  force_destroy               = true
-
-  lifecycle_rule {
-    action {
-      type = "Delete"
-    }
-    condition {
-      age = 3
-    }
-  }
-}
-
 resource "google_bigquery_dataset" "github_trends_dataset" {
   dataset_id = var.dataset_id
   location   = var.region

@@ -7,5 +7,37 @@ sources:
     tables:
       - name: watch_events
         identifier: source_watch_events
+        data_tests:
+          - distinct_event_dates_cover_past_days:
+              arguments:
+                days: 14
+                date_column: event_ts
+        columns:
+          - name: event_id
+            data_tests:
+              - not_null
+              - unique:
+                  config:
+                    severity: warn
+          # BigQuery load may expose event_ts before a DATE column; raw JSON always has created_at-derived ts.
+          - name: event_ts
+            data_tests:
+              - not_null
       - name: fork_events
         identifier: source_fork_events
+        data_tests:
+          - distinct_event_dates_cover_past_days:
+              arguments:
+                days: 14
+                date_column: event_ts
+        columns:
+          - name: event_id
+            data_tests:
+              - not_null
+              - unique:
+                  config:
+                    severity: warn
+          # ForkEvents sometimes lack repo.id in GH Archive; staging filters null repo_id.
+          - name: event_ts
+            data_tests:
+              - not_null
