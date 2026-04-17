@@ -69,9 +69,13 @@ This walkthrough assumes you run Airflow with Docker Compose from the `airflow/`
 ### Prerequisites
 
 - **Docker** and **Docker Compose** (`docker compose`).
-- **GCP**: New [project](https://console.cloud.google.com/), **billing** on, **project ID** + **region** (e.g. `us-central1`) for Terraform and **`.env`**. Enable **Cloud Storage**, **BigQuery**, **Dataproc**, and **Cloud Logging** APIs.
+- **GCP**: New [project](https://console.cloud.google.com/), **billing** on, **project ID** and **region** (e.g. `us-central1`) for Terraform and **`.env`**. Enable the **Cloud Storage**, **BigQuery**, **Cloud Dataproc**, and **Cloud Logging** APIs for that project (Console → **APIs & Services** → **Library**).
 - **Terraform** `>= 1.5` (see **`terraform/`**) for infra after clone.
 - **Service account** JSON for Airflow/Spark/dbt (`GHARCHIVE_GOOGLE_APPLICATION_CREDENTIALS_LOCAL`): **BigQuery Data Editor**, **BigQuery Job User**, **Dataproc Editor**, **Service Account User**, **Service Usage Admin**, **Storage Object Admin**. **`terraform apply`** needs a user or SA that can manage project resources.
+
+  Example (**Google Cloud Console → IAM →** service account **→ Permissions**): assign roles such as those below (your console labels may vary slightly).
+
+  ![Example IAM roles for the pipeline service account](./images/roles.png)
 
 ### 1. Clone the repository
 
@@ -91,7 +95,7 @@ This creates the raw **GCS** bucket, and the **BigQuery** dataset.
 
 ### 3. Configure environment variables for Airflow
 
-**First** edit **`.env.example`** at the **repository root** (before copying). Set **`GHARCHIVE_GCP_PROJECT_ID`** and **`GHARCHIVE_GOOGLE_APPLICATION_CREDENTIALS_LOCAL`** to match **your** project and key file. **`GHARCHIVE_GCS_BUCKET_NAME`**, **`GHARCHIVE_GCS_RAW_PREFIX`**, **`GHARCHIVE_GCS_PROCESSED_PREFIX`**, and **`GHARCHIVE_BQ_DATASET`** can stay at the **defaults shown in `.env.example`** if those names match what **Terraform** created (or your existing bucket and dataset); change them only when you use different resource names.
+**First** edit **`.env.example`** at the **repository root** (before copying). Set **`GHARCHIVE_GCP_PROJECT_ID`**, **`GHARCHIVE_GCP_REGION`**, **`GHARCHIVE_GOOGLE_APPLICATION_CREDENTIALS_LOCAL`** (path to your service account JSON on the host), and **`GHARCHIVE_DATAPROC_SERVICE_ACCOUNT`** (email for Dataproc batches) to match **your** GCP setup. **`GHARCHIVE_GCS_BUCKET_NAME`**, **`GHARCHIVE_GCS_RAW_PREFIX`**, **`GHARCHIVE_GCS_PROCESSED_PREFIX`**, and **`GHARCHIVE_BQ_DATASET`** can stay at the **defaults shown in `.env.example`** if those names match what **Terraform** created (or your existing bucket and dataset); change them only when you use different resource names.
 
 | Variable | Purpose |
 | --- | --- |
@@ -100,13 +104,11 @@ This creates the raw **GCS** bucket, and the **BigQuery** dataset.
 | `GHARCHIVE_GOOGLE_APPLICATION_CREDENTIALS_LOCAL` | Absolute path on your host to the service account JSON key (mounted for Airflow and dbt) |
 | `GHARCHIVE_DATAPROC_SERVICE_ACCOUNT` | Service account email for Dataproc Serverless batches (transform tasks), e.g. `my-sa@PROJECT_ID.iam.gserviceaccount.com` |
 
-Then copy the file Compose actually reads:
+Then copy the file Compose actually reads (from the **repository root**):
 
 ```bash
 cp .env.example airflow/.env
 ```
-
-Only **`airflow/.env`** is loaded (**`airflow/docker-compose.yml`** `env_file`). A **`.env`** at the **repository root** is unused by this project and can be deleted if you do not rely on it for other tools. Real secrets stay in **`airflow/.env`** (gitignored); the only committed template is **`.env.example`**.
 
 ### 4. Build the Airflow image
 
